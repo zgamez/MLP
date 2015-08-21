@@ -1,0 +1,152 @@
+---
+title: "predmachlearn-031 : Practical Machine Learning Course Project"
+output: html_document
+---
+
+**SUMMARY :**
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+
+- A: exactly according to the specification 
+- B: throwing the elbows to the front
+- C: lifting the dumbbell only halfway 
+- D: lowering the dumbbell only halfway
+- E: throwing the hips to the front
+
+
+*Load Files and libraries*
+
+```{r}
+library(caret)
+library(randomForest)
+library(parallel)
+library(doParallel)
+
+trainingRaw <- read.csv(file="pml-training.csv", header=TRUE, as.is = TRUE, stringsAsFactors = FALSE, sep=',', na.strings=c('NA','','#DIV/0!'))
+testingRaw <- read.csv(file="pml-testing.csv", header=TRUE, as.is = TRUE, stringsAsFactors = FALSE, sep=',', na.strings=c('NA','','#DIV/0!'))
+
+```
+
+*Data Analysis and approach*
+
+The provided dataset contains data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+```{r}
+## Cleaning
+
+trainingRaw <- trainingRaw[, colSums(is.na(trainingRaw)) == 0] 
+testingRaw <- testingRaw[, colSums(is.na(testingRaw)) == 0] 
+
+# Dropping reference columns raw_timestamp_part_1, raw_timestamp_part_2
+# cvtd_timestamp, new_window, num_window
+drops <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp",
+           "new_window", "num_window")
+trainingRaw <- trainingRaw[,!(names(trainingRaw) %in% drops)]
+testingRaw <- testingRaw[,!(names(testingRaw) %in% drops)]
+
+# Convert classe to factor
+trainingRaw$classe <- as.factor(trainingRaw$classe)
+```
+
+**Dataset Analysis**
+
+- Methodology. Is described in [1]. For the purposes of this project we will not speculate on conditions of the experiment around subject or that may imply time series effect.
+
+- Sparse data. The training file contains 19622 cases and 160 variables but only about a third is relevant as we have compressed to 52 variables. This still an important size but Random forests can handle this task as each split typically select m as sqrt(p) or as low as 1[4] . The other aspect is Variable Importance which we will assess later in this project with a focus on over fitting as per [4] "When the number of variables is large, but the fraction of relevant variables small, random forests are likely to perform poorly with small m. At each split the chance can be small that the relevant variables will be selected."
+
+- Metadata. There are 406 cases (new_window=yes) that also contain metadata for the window calculating a several reference values for the window that are incomplete for the remainder cases in the same window. We keep the 52 reference values and dropped the metadata columns.
+
+- Test Set. The test set is only 20 cases. We have cleaned it for the same 52 relevant variables.
+
+**Proposed Approach**
+
+Considering the notes on lecture 021 [0] and [2] reference we will opt for RANDOM FORESTS given its high performance 
+ 
+- Scaling. Random forest can handle unscaled variables. This reduces the need for cleaning and transforming variables which helps reduce noise and interpretability.
+
+- Out of sample error expectations. We will calculate error rate in the test data set as part of the procedure.
+
+- Cross-Validation. The goal of cross validation is to define a dataset to "test" the model in the training phase, in order to limit problems like over fitting, give an insight on how the model will generalize to an independent dataset [5]. Random forest has a built in cross-validation component that provides an unbiased estimate of the forest out-of-sample (OOB) error rate. See train command below with 5-fold parameter.  
+
+
+**Machine Learning Model**
+
+*Pre-Processing*
+
+- We partitioned the training set in 60% training and 40% validation.
+
+```{r}
+# Set train-test files
+
+set.seed(123456)
+
+fortrain <- createDataPartition(trainingRaw$classe, p = 0.6, list=FALSE)
+training <- trainingRaw[fortrain,]
+validation <- trainingRaw[-fortrain,]
+test <- testingRaw[,-53]  # Removes problem id column
+```
+
+Utilizing random forest we expect an out of sample error small. The error will be estimated using the 40% validation sample. Per [4] a 5% was estimated in the spam dataset and i would expect to find a similar result.
+
+```{r}
+# Train model
+cl <- makePSOCKcluster(2)
+registerDoParallel(cl)
+
+        modFit <- train(classe ~., method="rf", data=training, 
+                       trControl=trainControl(method="cv", 5,
+                                              allowParallel=TRUE))
+stopCluster(cl)
+```
+
+**RESULTS**
+
+```{r}
+#modFit
+VI <- varImp(modFit)
+plot(VI, main = "Variable Importance", top = 52)
+```
+
+Is noticeable roll_belt as the most significant predictor. We will discuss in our conclusions.
+
+```{r}
+# Accuracy validation set
+ValPred <- predict(modFit, validation)
+confusionMatrix(ValPred, validation$classe)
+```
+
+The model yields very high accuracy at 99.15% and very few misclassifications as seen in the prediction matrix
+
+```{r}
+# # # Predictions on the testing set
+finalPred <- predict(modFit, test)
+finalPred
+```
+
+Above the predictions over the test set. We have validated the 20 results as expected in the program results submittal page as correct.
+
+**CONCLUSIONS**
+
+The above model predicts exercise form based on movement data with an out of sample error 0.8%. We have also validated our predictions on the test set and confirmed a 20/20 results in the program submittal which leads to believe that the result is at least consistent with the course expectations. 
+
+We have concerns, though, that our model may be overfitting despite the cross validation process we followed. The variable importance points to roll_belt as the most relevant predictor of 52 variables so per [4] we were expecting the model to perform poorly so we can only point to the implementation of 5-fold cross validation as the remediation. We also pointed to the size of the test dataset and concerns in the data collection methodology. For future analysis we'd suggest to re-run the model with far less variables or consider another robust methology such as Gaussian SVM [1].
+
+
+*REFERENCES :*
+
+[0] Leek, Jeff. Practical Machine Learning. Lecture 021randomForests.
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+http://groupware.les.inf.puc-rio.br/har#ixzz3jCGeVRck
+
+[2] Manuel Fernandez-Delgado, Eva Cernadas, Senon Barro, Dinani Amorim; 15(Oct). 2014. Do we Need Hundreds of Classifiers to Solve Real World Classification Problems?
+http://jmlr.csail.mit.edu/papers/v15/delgado14a.html
+
+[3] Leo Breiman and Adele Cutler. Random Forests.
+https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#workings
+
+[4] Hastie. Tibshirani, Friedman. "The Elements of Statistical Learning (Data Mining, Inference, and Prediction". Springer Series in Statistics. Second Edition. 
+
+[5] Cross-validation (statistics). (2015, July 23). In Wikipedia, The Free Encyclopedia. Retrieved 20:39, August 19, 2015,   https://en.wikipedia.org/w/index.php?title=Cross-validation_(statistics)&oldid=672767097
